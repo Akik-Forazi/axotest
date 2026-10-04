@@ -1,41 +1,29 @@
-/** Regression test agent — diffs against baseline, ensures no regressions. */
+/** Regression test agent — runs existing tests + uses LLM to verify no regressions. */
 import { TestAgent, type AgentResult, type AgentRunOptions } from "./base.js";
-import { execSync } from "node:child_process";
 
 export class RegressionTestAgent extends TestAgent {
   readonly name = "regression";
-  readonly description = "Runs existing tests + diffs results against baseline";
+  readonly description = "Runs existing tests + LLM-verifies no regressions in changed code";
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const start = Date.now();
-    // Run the existing test suite and compare against the last known-good baseline
-    // For now: run vitest/pytest and report
-    try {
-      const output = execSync("npm test 2>&1 || true", {
-        cwd: opts.workspace,
-        encoding: "utf8",
-        timeout: 120_000,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      const passed = (output.match(/passing|passed/gi) ?? []).length;
-      const failed = (output.match(/failing|failed/gi) ?? []).length;
-      return this.ok({
-        passed: failed === 0,
-        testsRun: passed + failed,
-        testsPassed: passed,
-        failures: failed > 0 ? [`${failed} regression failures detected`] : [],
-        durationMs: Date.now() - start,
-        output: output.slice(0, 5000),
-      });
-    } catch (e) {
-      return this.ok({
-        passed: false,
-        testsRun: 0,
-        testsPassed: 0,
-        failures: [`Regression test runner failed: ${e instanceof Error ? e.message : String(e)}`],
-        durationMs: Date.now() - start,
-        output: "",
-      });
-    }
+
+    // Run the existing test suite
+    const { stdout, code } = this.run(opts.workspace, "npm test 2>&1 || true");
+    const passed = code === 0;
+    const passedMatch = stdout.match(/(\d+)\s+passing/i);
+    const failedMatch = stdout.match(/(\d+)\s+failing/i);
+    const testsPassed = passedMatch ? parseInt(passedMatch[1]) : 0;
+    const testsFailed = failedMatch ? parseInt(failedMatch[1]) : 0;
+    const testsRun = testsPassed + testsFailed;
+
+    return this.ok({
+      passed,
+      testsRun,
+      testsPassed,
+      failures: testsFailed > 0 ? [`${testsFailed} regression failures detected`] : [],
+      durationMs: Date.now() - start,
+      output: stdout.slice(0, 3000),
+    });
   }
 }

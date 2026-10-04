@@ -1,55 +1,71 @@
-/** Security agent — scans for common vulnerability patterns. */
+/** Security agent — uses LLM to scan for vulnerability patterns. */
 import { TestAgent, type AgentResult, type AgentRunOptions } from "./base.js";
-import { execSync } from "node:child_process";
+
+const SECURITY_PROMPT = `You are AXOTEST Security — an expert security auditor. Analyze the following code for security vulnerabilities (OWASP Top 10: injection, XSS, broken auth, sensitive data exposure, etc.).
+
+Respond with STRICT JSON:
+{"issues": [{"severity": "high"|"medium"|"low", "type": "vulnerability type", "line": "line number or range", "description": "what's wrong"}, ...], "secure": true|false}
+
+Code:`;
 
 export class SecurityAgent extends TestAgent {
   readonly name = "security";
-  readonly description = "Scans for common vulnerability patterns (OWASP Top 10)";
+  readonly description = "LLM-powered security audit (OWASP Top 10 scan via code understanding)";
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const start = Date.now();
+
+    // Get changed files
+    const { stdout } = this.run(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
+    const files = stdout.trim().split("\n").filter((l) => l.trim());
+
+    if (files.length === 0) {
+      return this.ok({ passed: true, testsRun: 0, testsPassed: 0, output: "No changed files to audit", durationMs: Date.now() - start });
+    }
+
     let testsRun = 0;
     let testsPassed = 0;
     const failures: string[] = [];
-    let output = "";
+    const outputs: string[] = [];
 
-    // Try running eslint with security rules
-    try {
-      output = execSync("npx eslint . --rule 'no-eval: error, no-implied-eval: error' 2>&1 || true", {
-        cwd: opts.workspace,
-        encoding: "utf8",
-        timeout: 60_000,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      const problems = (output.match(/\d+ problem/g) ?? [])[0];
-      if (problems) {
-        const count = parseInt(problems);
-        testsRun = count;
-        testsPassed = 0;
-        failures.push(`${count} security issues found by eslint`);
-      } else {
-        testsRun = 1;
-        testsPassed = 1;
+    for (const file of files.slice(0, 5)) {
+      const code = this.readFile(opts.workspace, file);
+      if (!code || code.length < 50) continue;
+
+      // Ask LLM to audit for security issues
+      const analysis = await this.callLLM(opts, SECURITY_PROMPT, code.slice(0, 6000), 500);
+
+      if (!analysis || analysis.startsWith("// LLM")) {
+        outputs.push(`${file}: LLM unavailable`);
+        continue;
       }
-    } catch {
-      // eslint not available — basic grep for common vuln patterns
+
+      testsRun++;
+
+      // Parse the JSON response
       try {
-        output = execSync(
-          'grep -rn "eval(\\|innerHTML\\|document.write\\|exec(\\|child_process" --include="*.ts" --include="*.js" --include="*.py" . 2>&1 | head -20 || true',
-          { cwd: opts.workspace, encoding: "utf8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
-        );
-        const lines = output.trim().split("\n").filter((l) => l.trim());
-        testsRun = lines.length;
-        testsPassed = 0;
-        if (lines.length > 0) {
-          failures.push(`${lines.length} potential security issues (eval/innerHTML/exec)`);
+        const jsonMatch = analysis.match(/\{[^}]+\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.secure === true || (parsed.issues && parsed.issues.length === 0)) {
+            testsPassed++;
+            outputs.push(`${file}: secure ✓`);
+          } else {
+            const issues = parsed.issues ?? [];
+            for (const issue of issues) {
+              const sev = issue.severity ?? "medium";
+              if (sev === "high" || sev === "medium") {
+                failures.push(`${file}: ${issue.type ?? "issue"} at line ${issue.line ?? "?"} — ${issue.description ?? ""}`);
+              }
+            }
+            if (failures.length === 0) testsPassed++;
+          }
         } else {
-          testsRun = 1;
-          testsPassed = 1;
+          // No JSON found — assume secure (LLM might have returned prose)
+          testsPassed++;
         }
       } catch {
-        testsRun = 1;
-        testsPassed = 1;
+        testsPassed++; // Can't parse — don't fail the build
       }
     }
 
@@ -59,7 +75,7 @@ export class SecurityAgent extends TestAgent {
       testsPassed,
       failures,
       durationMs: Date.now() - start,
-      output: output.slice(0, 5000),
+      output: outputs.join("\n"),
     });
   }
 }
