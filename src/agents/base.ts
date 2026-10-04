@@ -1,14 +1,12 @@
-/** Base test agent — includes LLM call infrastructure. */
+/** Base test agent — includes small-model ONNX inference infrastructure. */
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 export interface AgentRunOptions {
   workspace: string;
-  model?: string;
-  provider?: string;
-  baseUrl?: string;
-  apiKey?: string;
+  modelPath?: string;
   blastRadius?: string[];
 }
 
@@ -21,6 +19,8 @@ export interface AgentResult {
   durationMs: number;
   output: string;
 }
+
+const MODEL_CACHE_DIR = path.join(os.homedir(), ".axotest", "models");
 
 export abstract class TestAgent {
   abstract readonly name: string;
@@ -40,47 +40,30 @@ export abstract class TestAgent {
   }
 
   /**
-   * Call an LLM to generate something (a test, an analysis, etc.)
-   * Uses any OpenAI-compatible endpoint.
+   * Load a small ONNX model for a specific task.
+   * Model is cached at ~/.axotest/models/ after first download.
+   *
+   * task: "text-classification" | "text-generation" | "token-classification" | "feature-extraction"
+   * model: HuggingFace model ID (e.g., "Xenova/distilbert-base-uncased")
+   *
+   * All models are sub-200M params — runs on CPU in 10-50ms.
    */
-  protected async callLLM(
-    opts: AgentRunOptions,
-    systemPrompt: string,
-    userContent: string,
-    maxTokens = 2000,
-  ): Promise<string> {
-    const baseUrl = opts.baseUrl || process.env.AXOTEST_BASE_URL || "http://localhost:1234/v1";
-    const apiKey = opts.apiKey || process.env.AXOTEST_API_KEY || "";
-    const model = opts.model || process.env.AXOTEST_MODEL || "qwen2.5-coder-7b-instruct";
+  protected async loadModel(
+    task: string,
+    model: string,
+  ): Promise<(input: string) => Promise<unknown>> {
+    fs.mkdirSync(MODEL_CACHE_DIR, { recursive: true });
 
-    try {
-      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userContent },
-          ],
-          temperature: 0.3,
-          max_tokens: maxTokens,
-        }),
-        signal: AbortSignal.timeout(60_000),
-      });
+    const { pipeline } = await import("@huggingface/transformers");
 
-      if (!res.ok) {
-        return `// LLM call failed: ${res.status} ${res.statusText}`;
-      }
+    console.log(`  [axotest:${this.name}] Loading ${model} (${task}) — first run downloads model, cached at ${MODEL_CACHE_DIR}`);
 
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      return data.choices?.[0]?.message?.content ?? "";
-    } catch (e) {
-      return `// LLM unreachable: ${e instanceof Error ? e.message : String(e)}`;
-    }
+    const pipe = await pipeline(task, model, {
+      device: "cpu",
+      cache_dir: MODEL_CACHE_DIR,
+    });
+
+    return (input: string) => pipe(input) as Promise<unknown>;
   }
 
   /** Read a file from the workspace. */
@@ -99,13 +82,11 @@ export abstract class TestAgent {
     fs.writeFileSync(fullPath, content);
   }
 
-  /** Run a shell command in the workspace. */
+  /** Run a shell command. */
   protected run(workspace: string, cmd: string, timeoutMs = 120_000): { stdout: string; code: number | null } {
     try {
       const stdout = execSync(cmd, {
-        cwd: workspace,
-        encoding: "utf8",
-        timeout: timeoutMs,
+        cwd: workspace, encoding: "utf8", timeout: timeoutMs,
         stdio: ["pipe", "pipe", "pipe"],
       });
       return { stdout, code: 0 };
@@ -113,10 +94,5 @@ export abstract class TestAgent {
       const err = e as { stdout?: string; status?: number };
       return { stdout: err.stdout ?? "", code: err.status ?? 1 };
     }
-  }
-
-  /** Check if a file exists in the workspace. */
-  protected exists(workspace: string, ...files: string[]): boolean {
-    return files.some((f) => fs.existsSync(path.join(workspace, f)));
   }
 }

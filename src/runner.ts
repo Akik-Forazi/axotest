@@ -10,7 +10,7 @@
  *      - Regression test agent: runs existing tests + diffs results
  *      - Edge case agent: generates boundary-condition tests
  *      - Security agent: scans for common vulnerability patterns
- *   3. Each agent uses a small model (3B-8B) for cost efficiency
+ *   3. Each agent uses a sub-200M param specialized ONNX model — no API calls, runs on CPU
  *   4. Aggregate results, optionally auto-fix failures
  *   5. Report pass/fail with evidence
  */
@@ -27,8 +27,9 @@ import { SecurityAgent } from "./agents/security.js";
 export interface RunOptions {
   workspace: string;
   onlyAgent?: string;
-  model?: string;
-  provider?: string;
+  modelPath?: string;
+  
+  
   autoFix?: boolean;
 }
 
@@ -65,8 +66,7 @@ export async function runTests(opts: RunOptions): Promise<RunResult> {
     const agent = a.factory();
     return agent.run({
       workspace: opts.workspace,
-      model: opts.model,
-      provider: opts.provider,
+      modelPath: opts.modelPath,
       blastRadius,
     });
   });

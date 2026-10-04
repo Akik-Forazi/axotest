@@ -37,8 +37,8 @@ const HELP = `
   USAGE
     axotest run [options]     Run all test agents on the current repo
       --only <agent>          Run only one agent (unit|integration|regression|edge|security)
-      --model <model>         Override the model (default: auto-select cheapest)
-      --provider <p>          Provider: openai, anthropic, groq, ollama, lmstudio
+      
+      
       --fix                   Auto-fix failing tests (second pass)
     axotest report             Show the last test run report
     axotest --version          Print version
@@ -83,15 +83,12 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "run": {
       const only = args.includes("--only") ? args[args.indexOf("--only") + 1] : undefined;
-      const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
-      const provider = args.includes("--provider") ? args[args.indexOf("--provider") + 1] : undefined;
       const fix = args.includes("--fix");
 
       const result = await runTests({
         workspace: process.cwd(),
         onlyAgent: only,
-        model,
-        provider,
+        modelPath: args.includes("--model-path") ? args[args.indexOf("--model-path") + 1] : undefined,
         autoFix: fix,
       });
 

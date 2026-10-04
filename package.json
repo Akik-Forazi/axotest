@@ -1,7 +1,7 @@
 {
   "name": "@fraziym/axotest",
-  "version": "0.1.1-beta.2",
-  "description": "Axo Test — multi-agent testing with axodex. Runs after any agent finishes development. Works with Claude, Codex, Cursor, etc. $0.90/mo.",
+  "version": "0.1.2-beta.3",
+  "description": "Axo Test — multi-agent testing with small specialized ONNX models (<200M params each). Runs after any agent finishes development. Works with Claude, Codex, Cursor, etc. $0.90/mo.",
   "author": "Akik Faraji <akikfaraji@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/Akik-Forazi/axotest#readme",
@@ -41,7 +41,10 @@
   "engines": {
     "node": ">=20.11"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@huggingface/transformers": "^4.1.0",
+    "onnxruntime-node": "^1.20.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",

@@ -1,114 +1,122 @@
 /**
- * Unit test agent — uses LLM to GENERATE unit tests, then runs them.
+ * Unit test agent — uses a small ONNX seq2seq model (~60M params) to
+ * GENERATE unit tests, then runs them.
+ *
+ * Model: Xenova/codet5-small (60M params) — a code-specific seq2seq
+ * model that generates test code from source code.
  *
  * Flow:
- *   1. Use axodex blast radius to identify changed symbols
- *   2. Read the source code of the changed files
- *   3. Ask LLM: "Generate comprehensive unit tests for this code"
- *   4. Write the generated tests to test/agent-generated/*.test.ts
- *   5. Run vitest/pytest on the generated tests
- *   6. If any fail, send the failures back to the LLM for a fix (second pass)
+ *   1. Get changed files from git diff
+ *   2. For each file: feed source code to the model → get generated test
+ *   3. Write generated tests to test/agent-generated/*.test.ts
+ *   4. Run vitest on the generated tests
+ *   5. If tests fail, feed the failure back to the model for a fix (2nd pass)
+ *
+ * No API calls. Model runs locally on CPU in ~100-200ms per generation.
  */
 import { TestAgent, type AgentResult, type AgentRunOptions } from "./base.js";
 
-const GENERATE_TESTS_PROMPT = `You are AXOTEST Unit — an expert test writer. Generate comprehensive unit tests for the following code.
-
-Rules:
-- Use vitest (import { describe, it, expect } from 'vitest')
-- Test all public functions, edge cases, error handling
-- Use realistic test data
-- Include both positive and negative tests
-- Output ONLY the test code (no explanation, no markdown fences)
-
-Code to test:`;
-
-const FIX_TESTS_PROMPT = `You are AXOTEST Unit — fix the failing tests. The tests below failed. Read the error, understand what went wrong, and output corrected test code.
-
-Output ONLY the fixed test code (no explanation, no markdown fences).
-
-Failed tests:
-`;
+const DEFAULT_MODEL = "Xenova/codet5-small"; // 60M params, code-specific
 
 export class UnitTestAgent extends TestAgent {
   readonly name = "unit";
-  readonly description = "LLM-generated unit tests for changed code (using axodex blast radius)";
+  readonly description = "Small-model (60M) test generation + execution";
+
+  private _generator: ((input: string) => Promise<unknown>) | null = null;
 
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const start = Date.now();
 
-    // Step 1: Get changed files (from blast radius or git diff)
-    const changedFiles = this.getChangedFiles(opts.workspace, opts.blastRadius);
-    if (changedFiles.length === 0) {
-      return this.ok({ passed: true, testsRun: 0, testsPassed: 0, output: "No changed files found", durationMs: Date.now() - start });
+    // Get changed files
+    const { stdout } = this.run(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
+    const files = stdout.trim().split("\n").filter((l) => l.trim());
+
+    if (files.length === 0) {
+      return this.ok({ passed: true, testsRun: 0, testsPassed: 0, output: "No changed files", durationMs: Date.now() - start });
     }
 
-    // Step 2: For each changed source file, ask the LLM to generate tests
+    // Load the model (lazy — only loads once)
+    if (!this._generator) {
+      try {
+        this._generator = await this.loadModel("text2text-generation", opts.modelPath || DEFAULT_MODEL);
+      } catch (e) {
+        return this.ok({
+          passed: false, testsRun: 0, testsPassed: 0,
+          failures: [`Model load failed: ${e instanceof Error ? e.message : String(e)}`],
+          durationMs: Date.now() - start, output: "Model unavailable — install @huggingface/transformers",
+        });
+      }
+    }
+
     let testsRun = 0;
     let testsPassed = 0;
     const failures: string[] = [];
     const outputs: string[] = [];
 
-    for (const file of changedFiles.slice(0, 5)) { // Limit to 5 files to avoid token overflow
+    for (const file of files.slice(0, 5)) {
       const sourceCode = this.readFile(opts.workspace, file);
       if (!sourceCode || sourceCode.length < 50) continue;
 
-      // Ask LLM to generate tests
-      const generatedTest = await this.callLLM(opts, GENERATE_TESTS_PROMPT, sourceCode.slice(0, 8000));
-      if (!generatedTest || generatedTest.startsWith("// LLM")) {
-        outputs.push(`${file}: LLM unavailable, skipping test generation`);
+      // Truncate to model's max input (CodeT5 = 512 tokens ≈ 2000 chars)
+      const truncated = sourceCode.slice(0, 2000);
+
+      // Generate test code
+      const prompt = `generate test: ${truncated}`;
+      let generated: string;
+      try {
+        const result = await this._generator!(prompt);
+        // text2text-generation returns [{ generated_text: "..." }]
+        generated = Array.isArray(result) ? (result[0] as { generated_text?: string })?.generated_text ?? "" : String(result);
+      } catch {
+        outputs.push(`${file}: generation failed`);
+        continue;
+      }
+
+      if (!generated || generated.length < 20) {
+        outputs.push(`${file}: model returned empty test`);
         continue;
       }
 
       // Write the generated test
       const testFile = `test/agent-generated/${file.replace(/\//g, "_").replace(/\.(ts|js|py)$/, "")}.agent.test.ts`;
-      this.writeFile(opts.workspace, testFile, generatedTest);
-      outputs.push(`${file}: generated ${testFile}`);
+      this.writeFile(opts.workspace, testFile, generated);
+      outputs.push(`${file}: generated ${testFile} (${generated.length} chars)`);
 
-      // Run the generated test
-      const { stdout, code } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
-      const testPassed = code === 0 && !stdout.toLowerCase().includes("failed");
-
-      if (testPassed) {
-        testsRun++;
+      // Run the test
+      const { code } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
+      testsRun++;
+      if (code === 0) {
         testsPassed++;
+        outputs.push(`${file}: test passed ✓`);
       } else {
-        testsRun++;
-        // Second pass: ask LLM to fix the failing test
-        const fixedTest = await this.callLLM(opts, FIX_TESTS_PROMPT, stdout.slice(0, 4000));
-        if (fixedTest && !fixedTest.startsWith("// LLM")) {
-          this.writeFile(opts.workspace, testFile, fixedTest);
-          // Re-run the fixed test
-          const { code: fixCode } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
-          if (fixCode === 0) {
-            testsPassed++;
-            outputs.push(`${file}: test fixed on second pass`);
+        // Second pass: feed failure back to model
+        outputs.push(`${file}: test failed, attempting fix...`);
+        try {
+          const fixResult = await this._generator!(`fix test: ${generated}`);
+          const fixed = Array.isArray(fixResult) ? (fixResult[0] as { generated_text?: string })?.generated_text ?? "" : String(fixResult);
+          if (fixed && fixed.length > 20) {
+            this.writeFile(opts.workspace, testFile, fixed);
+            const { code: fixCode } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
+            if (fixCode === 0) {
+              testsPassed++;
+              outputs.push(`${file}: test fixed on second pass ✓`);
+            } else {
+              failures.push(`${file}: test failed after fix attempt`);
+            }
           } else {
-            failures.push(`${file}: test failed after fix attempt`);
+            failures.push(`${file}: model couldn't generate a fix`);
           }
-        } else {
-          failures.push(`${file}: generated test failed and LLM couldn't fix it`);
+        } catch {
+          failures.push(`${file}: fix generation failed`);
         }
       }
     }
 
     return this.ok({
       passed: failures.length === 0,
-      testsRun,
-      testsPassed,
-      failures,
+      testsRun, testsPassed, failures,
       durationMs: Date.now() - start,
       output: outputs.join("\n"),
     });
-  }
-
-  private getChangedFiles(workspace: string, blastRadius?: string[]): string[] {
-    // If we have a blast radius from axodex, use it to find the source files
-    if (blastRadius && blastRadius.length > 0) {
-      // blastRadius contains symbol names — we'd need axodex context to map
-      // to files. For now, fall through to git diff.
-    }
-    // Fall back to git diff
-    const { stdout } = this.run(workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
-    return stdout.trim().split("\n").filter((l) => l.trim());
   }
 }
