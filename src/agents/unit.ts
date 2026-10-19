@@ -28,7 +28,7 @@ export class UnitTestAgent extends TestAgent {
     const start = Date.now();
 
     // Get changed files
-    const { stdout } = this.run(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
+    const { stdout } = this.sh(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
     const files = stdout.trim().split("\n").filter((l) => l.trim());
 
     if (files.length === 0) {
@@ -83,7 +83,7 @@ export class UnitTestAgent extends TestAgent {
       outputs.push(`${file}: generated ${testFile} (${generated.length} chars)`);
 
       // Run the test
-      const { code } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
+      const { code } = this.sh(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
       testsRun++;
       if (code === 0) {
         testsPassed++;
@@ -96,7 +96,7 @@ export class UnitTestAgent extends TestAgent {
           const fixed = Array.isArray(fixResult) ? (fixResult[0] as { generated_text?: string })?.generated_text ?? "" : String(fixResult);
           if (fixed && fixed.length > 20) {
             this.writeFile(opts.workspace, testFile, fixed);
-            const { code: fixCode } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
+            const { code: fixCode } = this.sh(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
             if (fixCode === 0) {
               testsPassed++;
               outputs.push(`${file}: test fixed on second pass ✓`);

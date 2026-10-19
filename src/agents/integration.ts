@@ -23,7 +23,7 @@ export class IntegrationTestAgent extends TestAgent {
     const start = Date.now();
 
     // Query axodex for execution flows
-    const { stdout: flows } = this.run(opts.workspace, "axodex query --limit 5 2>&1 || true");
+    const { stdout: flows } = this.sh(opts.workspace, "axodex query --limit 5 2>&1 || true");
     if (!flows.trim()) {
       return this.ok({ passed: true, testsRun: 0, testsPassed: 0, output: "No axodex execution flows found", durationMs: Date.now() - start });
     }

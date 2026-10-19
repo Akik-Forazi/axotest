@@ -22,7 +22,7 @@ export class SecurityAgent extends TestAgent {
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const start = Date.now();
 
-    const { stdout } = this.run(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
+    const { stdout } = this.sh(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
     const files = stdout.trim().split("\n").filter((l) => l.trim());
 
     if (files.length === 0) {

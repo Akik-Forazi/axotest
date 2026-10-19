@@ -20,7 +20,13 @@ export interface AgentResult {
   output: string;
 }
 
-const MODEL_CACHE_DIR = path.join(os.homedir(), ".axotest", "models");
+/** Shared Fraziym root — one dir for every Fraziym product (~/.fraziym, override: $FRAZIYM_HOME). */
+function fraziymRoot(): string {
+  const override = process.env.FRAZIYM_HOME?.trim();
+  return override ? path.resolve(override) : path.join(os.homedir(), ".fraziym");
+}
+
+const MODEL_CACHE_DIR = path.join(fraziymRoot(), "axotest", "models");
 
 export abstract class TestAgent {
   abstract readonly name: string;
@@ -41,7 +47,7 @@ export abstract class TestAgent {
 
   /**
    * Load a small ONNX model for a specific task.
-   * Model is cached at ~/.axotest/models/ after first download.
+   * Model is cached at ~/.fraziym/axotest/models/ after first download.
    *
    * task: "text-classification" | "text-generation" | "token-classification" | "feature-extraction"
    * model: HuggingFace model ID (e.g., "Xenova/distilbert-base-uncased")
@@ -58,12 +64,12 @@ export abstract class TestAgent {
 
     console.log(`  [axotest:${this.name}] Loading ${model} (${task}) — first run downloads model, cached at ${MODEL_CACHE_DIR}`);
 
-    const pipe = await pipeline(task, model, {
+    const pipe = (await pipeline(task as Parameters<typeof pipeline>[0], model, {
       device: "cpu",
       cache_dir: MODEL_CACHE_DIR,
-    });
+    })) as unknown as (input: string) => Promise<unknown>;
 
-    return (input: string) => pipe(input) as Promise<unknown>;
+    return (input: string) => pipe(input);
   }
 
   /** Read a file from the workspace. */
@@ -83,7 +89,7 @@ export abstract class TestAgent {
   }
 
   /** Run a shell command. */
-  protected run(workspace: string, cmd: string, timeoutMs = 120_000): { stdout: string; code: number | null } {
+  protected sh(workspace: string, cmd: string, timeoutMs = 120_000): { stdout: string; code: number | null } {
     try {
       const stdout = execSync(cmd, {
         cwd: workspace, encoding: "utf8", timeout: timeoutMs,

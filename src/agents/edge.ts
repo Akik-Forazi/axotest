@@ -21,7 +21,7 @@ export class EdgeCaseAgent extends TestAgent {
   async run(opts: AgentRunOptions): Promise<AgentResult> {
     const start = Date.now();
 
-    const { stdout } = this.run(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
+    const { stdout } = this.sh(opts.workspace, "git diff --name-only HEAD~5..HEAD -- '*.ts' '*.js' '*.py' 2>/dev/null || true");
     const files = stdout.trim().split("\n").filter((l) => l.trim());
 
     if (files.length === 0) {
@@ -72,7 +72,7 @@ export class EdgeCaseAgent extends TestAgent {
           const testCode = generateEdgeCaseTest(file, boundaryTokens.map(t => t.word).slice(0, 10));
           const testFile = `test/agent-generated/${file.replace(/\//g, "_").replace(/\.(ts|js|py)$/, "")}.edge.test.ts`;
           this.writeFile(opts.workspace, testFile, testCode);
-          const { code: exitCode } = this.run(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
+          const { code: exitCode } = this.sh(opts.workspace, `npx vitest run ${testFile} 2>&1 || true`);
           if (exitCode === 0) {
             testsPassed++;
             outputs.push(`${file}: ${boundaryTokens.length} edge cases → tests passed ✓`);

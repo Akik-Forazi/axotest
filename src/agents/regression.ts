@@ -9,7 +9,7 @@ export class RegressionTestAgent extends TestAgent {
     const start = Date.now();
 
     // Run the existing test suite
-    const { stdout, code } = this.run(opts.workspace, "npm test 2>&1 || true");
+    const { stdout, code } = this.sh(opts.workspace, "npm test 2>&1 || true");
     const passed = code === 0;
     const passedMatch = stdout.match(/(\d+)\s+passing/i);
     const failedMatch = stdout.match(/(\d+)\s+failing/i);
