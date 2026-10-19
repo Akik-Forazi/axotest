@@ -114,7 +114,7 @@ async function main(): Promise<void> {
       break;
     }
     case "report": {
-      // TODO: read last report from ~/.axotest/reports/
+      // TODO: read last report from ~/.fraziym/axotest/reports/
       console.log("\n  No previous report found. Run 'axotest run' first.\n");
       break;
     }
